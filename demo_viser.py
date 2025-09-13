@@ -18,6 +18,7 @@ import viser
 import viser.transforms as viser_tf
 import cv2
 
+import trimesh
 
 try:
     import onnxruntime
@@ -134,6 +135,35 @@ def viser_wrapper(
         point_size=0.001,
         point_shape="circle",
     )
+
+    # === Export PLY button (exports *world* coords, not centered) ===
+    btn_export = server.gui.add_button("Export PLY")
+
+    @btn_export.on_click
+    def _(_ev):
+        # Use current GUI percentile
+        current_pct = gui_points_conf.value
+        thr = np.percentile(conf_flat, current_pct)
+
+        # Base confidence mask + finite check
+        export_mask = (conf_flat >= thr) & np.isfinite(points).all(axis=-1)
+
+        # Honor frame dropdown (optional)
+        if gui_frame_selector.value != "All":
+            sel = int(gui_frame_selector.value)
+            export_mask &= (frame_indices == sel)
+
+        out_dir = image_folder if image_folder is not None else "."
+        out_ply = os.path.join(out_dir, f"dense_vggt_viser_p{int(current_pct)}.ply")
+        N = int(export_mask.sum())
+        print(f"[PLY] Exporting {N} points to {out_ply}")
+
+        # Export world coords + uint8 RGB
+        trimesh.PointCloud(
+            points[export_mask].astype(np.float32),
+            colors=colors_flat[export_mask]
+        ).export(out_ply)
+
 
     # We will store references to frames & frustums so we can toggle visibility
     frames: List[viser.FrameHandle] = []
