@@ -76,6 +76,8 @@ def run_VGGT(model, images, dtype, resolution=518):
             images = images[None]  # add batch dimension
             aggregated_tokens_list, ps_idx = model.aggregator(images)
 
+        aggregated_tokens_list = [x.to("cuda") for x in aggregated_tokens_list]
+        
         # Predict Cameras
         pose_enc = model.camera_head(aggregated_tokens_list)[-1]
         # Extrinsic and intrinsic matrices, following OpenCV convention (camera from world)
@@ -240,13 +242,53 @@ def demo_fn(args):
         shared_camera=shared_camera,
     )
 
-    print(f"Saving reconstruction to {args.scene_dir}/sparse")
-    sparse_reconstruction_dir = os.path.join(args.scene_dir, "sparse")
+    print(f"Saving reconstruction to {args.scene_dir}/sparse/0")
+    sparse_reconstruction_dir = os.path.join(args.scene_dir, "sparse", "0")
     os.makedirs(sparse_reconstruction_dir, exist_ok=True)
     reconstruction.write(sparse_reconstruction_dir)
 
     # Save point cloud for fast visualization
     trimesh.PointCloud(points_3d, colors=points_rgb).export(os.path.join(args.scene_dir, "sparse/points.ply"))
+
+    # ===== Dense point cloud directly from VGGT depth =====
+    # We’ll use the *full* depth maps (no random downsampling), filter by confidence,
+    # unproject to 3D, color from the images, and export a dense .ply.
+
+    print("Exporting dense point cloud directly from VGGT depth...")
+
+    # 1) Make sure we have depth, conf, extrinsic/intrinsic at the same (518) resolution
+    # depth_map:    (S, H, W, 1)
+    # depth_conf:   (S, H, W)
+    # extrinsic:    (S, 3, 4)  [camera-from-world]
+    # intrinsic:    (S, 3, 3)
+    S, H, W, _ = depth_map.shape
+    assert depth_conf.shape == (S, H, W)
+
+    # 2) Unproject all pixels (this returns (S, H, W, 3) world points)
+    dense_world_points = unproject_depth_map_to_point_map(depth_map, extrinsic, intrinsic)
+
+    # 3) Colors at the same resolution used for VGGT depth (518x518 here)
+    # images is (S, 3, H0, W0) at 1024; we resample to (518, 518) to match depth
+    images_518 = F.interpolate(
+        images, size=(H, W), mode="bilinear", align_corners=False
+    ).cpu().numpy()
+    colors_518 = (images_518.transpose(0, 2, 3, 1) * 255).astype(np.uint8)  # (S,H,W,3)
+
+    # 4) Confidence filtering — keep pixels above a percentile (adjust if needed)
+    keep_percentile = 25.0  # keep top 30% most confident; smaller = denser, larger = cleaner
+    conf_threshold = np.percentile(depth_conf[depth_conf > 0], keep_percentile)
+    mask = (depth_conf >= conf_threshold) & np.isfinite(dense_world_points).all(axis=-1)
+    if mask.sum() == 0:
+        print("Warning: confidence filter too strict; lowering threshold.")
+        mask = np.isfinite(dense_world_points).all(axis=-1)
+
+    # 5) Flatten and export
+    dense_pts = dense_world_points[mask]                # (N,3)
+    dense_rgb = colors_518[mask]                        # (N,3) uint8
+
+    out_dense_ply = os.path.join(args.scene_dir, "dense_vggt.ply")
+    print(f"Saving dense point cloud to {out_dense_ply}  with {dense_pts.shape[0]} points")
+    trimesh.PointCloud(dense_pts, colors=dense_rgb).export(out_dense_ply)
 
     return True
 
