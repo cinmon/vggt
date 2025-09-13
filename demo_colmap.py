@@ -76,8 +76,6 @@ def run_VGGT(model, images, dtype, resolution=518):
             images = images[None]  # add batch dimension
             aggregated_tokens_list, ps_idx = model.aggregator(images)
 
-        aggregated_tokens_list = [x.to("cuda") for x in aggregated_tokens_list]
-        
         # Predict Cameras
         pose_enc = model.camera_head(aggregated_tokens_list)[-1]
         # Extrinsic and intrinsic matrices, following OpenCV convention (camera from world)
@@ -242,15 +240,15 @@ def demo_fn(args):
         shared_camera=shared_camera,
     )
 
-    print(f"Saving reconstruction to {args.scene_dir}/sparse/0")
-    sparse_reconstruction_dir = os.path.join(args.scene_dir, "sparse", "0")
+    print(f"Saving reconstruction to {args.scene_dir}/sparse")
+    sparse_reconstruction_dir = os.path.join(args.scene_dir, "sparse")
     os.makedirs(sparse_reconstruction_dir, exist_ok=True)
     reconstruction.write(sparse_reconstruction_dir)
 
     # Save point cloud for fast visualization
     trimesh.PointCloud(points_3d, colors=points_rgb).export(os.path.join(args.scene_dir, "sparse/points.ply"))
 
-    # ===== Dense point cloud directly from VGGT depth =====
+        # ===== Dense point cloud directly from VGGT depth =====
     # We’ll use the *full* depth maps (no random downsampling), filter by confidence,
     # unproject to 3D, color from the images, and export a dense .ply.
 
@@ -275,7 +273,7 @@ def demo_fn(args):
     colors_518 = (images_518.transpose(0, 2, 3, 1) * 255).astype(np.uint8)  # (S,H,W,3)
 
     # 4) Confidence filtering — keep pixels above a percentile (adjust if needed)
-    keep_percentile = 25.0  # keep top 30% most confident; smaller = denser, larger = cleaner
+    keep_percentile = 70.0  # keep top 30% most confident; smaller = denser, larger = cleaner
     conf_threshold = np.percentile(depth_conf[depth_conf > 0], keep_percentile)
     mask = (depth_conf >= conf_threshold) & np.isfinite(dense_world_points).all(axis=-1)
     if mask.sum() == 0:
@@ -289,6 +287,7 @@ def demo_fn(args):
     out_dense_ply = os.path.join(args.scene_dir, "dense_vggt.ply")
     print(f"Saving dense point cloud to {out_dense_ply}  with {dense_pts.shape[0]} points")
     trimesh.PointCloud(dense_pts, colors=dense_rgb).export(out_dense_ply)
+
 
     return True
 
